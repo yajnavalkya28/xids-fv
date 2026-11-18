@@ -285,17 +285,39 @@ class_names = list(le.classes_)
 st.header("1️⃣ Select a model")
 model_name = st.selectbox("Model", list(MODEL_FILES.keys()), label_visibility="collapsed")
 
-# Step 2 - upload
-st.header("2️⃣ Upload a dataset")
-st.caption(f"CSV of CICFlowMeter network flows (an optional `Label` column is fine). "
-           f"First {MAX_ROWS:,} rows are used.")
-up = st.file_uploader("Upload CSV", type=["csv"], label_visibility="collapsed")
-if up is None:
-    st.info("Upload a CSV to continue.")
-    st.stop()
+# Step 2 - data source (sample or upload)
+st.header("2️⃣ Choose a dataset")
+SAMPLE_PATH = os.path.join(BASE_DIR, "sample_data", "sample_flows.csv")
+has_sample = os.path.exists(SAMPLE_PATH)
+
+source = st.radio(
+    "Data source",
+    ["Use sample data", "Upload my own CSV"],
+    index=0 if has_sample else 1,
+    horizontal=True,
+    label_visibility="collapsed",
+)
+
+if source == "Use sample data":
+    if not has_sample:
+        st.error("`sample_data/sample_flows.csv` was not found in the repository.")
+        st.stop()
+    with open(SAMPLE_PATH, "rb") as f:
+        file_bytes = f.read()
+    file_name = "sample_flows.csv"
+    st.info("Using the built-in sample (a mix of Benign and attack flows).")
+    st.download_button("⬇️ Download this sample CSV", file_bytes, "sample_flows.csv", "text/csv")
+else:
+    st.caption(f"CSV of CICFlowMeter network flows (an optional `Label` column is fine). "
+               f"First {MAX_ROWS:,} rows are used.")
+    up = st.file_uploader("Upload CSV", type=["csv"], label_visibility="collapsed")
+    if up is None:
+        st.info("Upload a CSV to continue, or switch to the sample data above.")
+        st.stop()
+    file_bytes, file_name = up.getvalue(), up.name
 
 try:
-    Xs, raw, true_label, missing, probs, pred = run_prediction(up.getvalue(), up.name, model_name)
+    Xs, raw, true_label, missing, probs, pred = run_prediction(file_bytes, file_name, model_name)
 except FileNotFoundError as e:
     st.error(str(e)); st.stop()
 except Exception as e:
@@ -349,7 +371,7 @@ verdict = pred_names[flow_idx]
 st.write(f"Flow **#{flow_idx}** → {'✅ Safe' if is_benign(verdict) else '🚨 Attack'} "
          f"(**{verdict}**, confidence {conf[flow_idx]*100:.1f}%)")
 
-sig = (model_name, up.name, up.size, flow_idx)
+sig = (model_name, file_name, len(file_bytes), flow_idx)
 if st.button("Explain with SHAP", type="primary"):
     with st.spinner("Computing SHAP values..."):
         try:
