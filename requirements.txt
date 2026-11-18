@@ -8,3 +8,5 @@ matplotlib
 joblib
 requests
 tensorflow-cpu>=2.16
+dill
+cloudpickle
