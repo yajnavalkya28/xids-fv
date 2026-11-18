@@ -50,9 +50,20 @@ def load_artifacts():
     le = joblib.load(p("label_encoder.joblib"))
     all_cols = list(joblib.load(p("all_feature_columns.pkl")))
     sel_cols = list(joblib.load(p("selected_features.pkl")))
+    # SHAP background: the explained samples saved from the notebook
+    # (already scaled + PSO-selected). Tries .joblib first, then .npz.
     bg = None
-    if os.path.exists(p("shap_background.joblib")):
-        bg = np.asarray(joblib.load(p("shap_background.joblib")), dtype="float32")
+    try:
+        if os.path.exists(p("shap_values_direct.joblib")):
+            bg = np.asarray(joblib.load(p("shap_values_direct.joblib"))["X"], dtype="float32")
+        elif os.path.exists(p("shap_values.npz")):
+            bg = np.asarray(np.load(p("shap_values.npz"), allow_pickle=True)["X"], dtype="float32")
+        elif os.path.exists(p("shap_background.joblib")):
+            bg = np.asarray(joblib.load(p("shap_background.joblib")), dtype="float32")
+    except Exception:
+        bg = None
+    if bg is not None and bg.shape[1] != len(sel_cols):
+        bg = None  # shape mismatch -> ignore, fall back to uploaded data
     return scaler, le, all_cols, sel_cols, bg
 
 
@@ -342,9 +353,10 @@ sig = (model_name, up.name, up.size, flow_idx)
 if st.button("Explain with SHAP", type="primary"):
     with st.spinner("Computing SHAP values..."):
         try:
-            background = bg_saved if bg_saved is not None else Xs[np.random.default_rng(42).choice(
-                len(Xs), min(SHAP_BG, len(Xs)), replace=False)]
-            background = background[:SHAP_BG]
+            pool = bg_saved if bg_saved is not None else Xs
+            # random sample (saved file is sorted by class, so don't just take the first rows)
+            background = pool[np.random.default_rng(42).choice(
+                len(pool), min(SHAP_BG, len(pool)), replace=False)]
             sv, method = explain_flow(model_name, load_model(model_name), Xs[flow_idx:flow_idx + 1], background)
             local = sv[:, int(pred[flow_idx])]
             st.session_state["shap"] = dict(sig=sig, local=local, method=method)
