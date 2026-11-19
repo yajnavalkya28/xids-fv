@@ -127,17 +127,19 @@ def preprocess(df, scaler, all_cols, sel_cols):
     return scaled[:, idx], X[sel_cols].reset_index(drop=True), true_label, missing
 
 
-@st.cache_data(show_spinner="Running model on your flows...")
-def run_prediction(file_bytes, file_name, model_name):
+@st.cache_data(show_spinner="Running model(s) on your flows...")
+def run_prediction(file_bytes, file_name, model_names):
     import io
 
     scaler, le, all_cols, sel_cols, _ = load_artifacts()
     df = pd.read_csv(io.BytesIO(file_bytes), low_memory=False, nrows=MAX_ROWS)
     Xs, raw, true_label, missing = preprocess(df, scaler, all_cols, sel_cols)
-    model = load_model(model_name)
-    probs = make_predict_fn(model_name, model)(Xs)
+    per_model = {}
+    for name in model_names:
+        per_model[name] = make_predict_fn(name, load_model(name))(Xs)
+    probs = np.mean(list(per_model.values()), axis=0)   # soft voting (average probabilities)
     pred = probs.argmax(1)
-    return Xs, raw, true_label, missing, probs, pred
+    return Xs, raw, true_label, missing, probs, pred, per_model
 
 
 def is_benign(cls):
@@ -158,9 +160,20 @@ def norm_sv(sv, N, F):
     return sv
 
 
-def explain_flow(model_name, model, x_row, background):
-    """x_row: (1, F) scaled. Returns (F,) SHAP values for every class -> (F, C) and method name."""
+def explain_flow(names, x_row, background):
+    """x_row: (1, F) scaled. Returns SHAP values (F, C) and the method name."""
     F = x_row.shape[1]
+
+    if len(names) > 1:  # ensemble: model-agnostic explainer on the averaged probabilities
+        fns = [make_predict_fn(n, load_model(n)) for n in names]
+        ens_fn = lambda a: np.mean([f(a) for f in fns], axis=0)
+        masker = shap.maskers.Independent(background[:30], max_samples=30)
+        ex = shap.Explainer(ens_fn, masker, algorithm="permutation")
+        sv = ex(x_row, max_evals=2 * F + 1, silent=True).values
+        return norm_sv(sv, 1, F)[0], "PermutationExplainer (ensemble)"
+
+    model_name = names[0]
+    model = load_model(model_name)
     kind = MODEL_FILES[model_name][0]
     predict_fn = make_predict_fn(model_name, model)
 
@@ -282,8 +295,23 @@ except Exception as e:
 class_names = list(le.classes_)
 
 # Step 1 - model
-st.header("1️⃣ Select a model")
-model_name = st.selectbox("Model", list(MODEL_FILES.keys()), label_visibility="collapsed")
+st.header("1️⃣ Select model(s)")
+use_all = st.checkbox("Use all 6 models (ensemble)")
+if use_all:
+    selected = list(MODEL_FILES.keys())
+else:
+    selected = st.multiselect(
+        "Models", list(MODEL_FILES.keys()), default=["XGBoost"],
+        help="Pick one model, or several to mix them into an ensemble.",
+    )
+if not selected:
+    st.warning("Select at least one model.")
+    st.stop()
+if len(selected) == 1:
+    model_name = selected[0]
+else:
+    model_name = f"Ensemble of {len(selected)} models"
+    st.caption("Ensemble = average of the models' class probabilities (soft voting): " + ", ".join(selected))
 
 # Step 2 - data source (sample or upload)
 st.header("2️⃣ Choose a dataset")
@@ -317,7 +345,7 @@ else:
     file_bytes, file_name = up.getvalue(), up.name
 
 try:
-    Xs, raw, true_label, missing, probs, pred = run_prediction(file_bytes, file_name, model_name)
+    Xs, raw, true_label, missing, probs, pred, per_model = run_prediction(file_bytes, file_name, tuple(selected))
 except FileNotFoundError as e:
     st.error(str(e)); st.stop()
 except Exception as e:
@@ -371,7 +399,18 @@ verdict = pred_names[flow_idx]
 st.write(f"Flow **#{flow_idx}** → {'✅ Safe' if is_benign(verdict) else '🚨 Attack'} "
          f"(**{verdict}**, confidence {conf[flow_idx]*100:.1f}%)")
 
-sig = (model_name, file_name, len(file_bytes), flow_idx)
+if len(selected) > 1:
+    rows = []
+    for n, p in per_model.items():
+        k = int(p[flow_idx].argmax())
+        rows.append({"Model": n, "Predicted class": class_names[k],
+                     "Status": "✅ Safe" if is_benign(class_names[k]) else "🚨 Attack",
+                     "Confidence": f"{p[flow_idx][k]*100:.1f} %"})
+    agree = sum(r["Predicted class"] == verdict for r in rows)
+    st.caption(f"{agree} of {len(rows)} models agree with the ensemble verdict.")
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+sig = (tuple(selected), file_name, len(file_bytes), flow_idx)
 if st.button("Explain with SHAP", type="primary"):
     with st.spinner("Computing SHAP values..."):
         try:
@@ -379,7 +418,7 @@ if st.button("Explain with SHAP", type="primary"):
             # random sample (saved file is sorted by class, so don't just take the first rows)
             background = pool[np.random.default_rng(42).choice(
                 len(pool), min(SHAP_BG, len(pool)), replace=False)]
-            sv, method = explain_flow(model_name, load_model(model_name), Xs[flow_idx:flow_idx + 1], background)
+            sv, method = explain_flow(selected, Xs[flow_idx:flow_idx + 1], background)
             local = sv[:, int(pred[flow_idx])]
             st.session_state["shap"] = dict(sig=sig, local=local, method=method)
             st.session_state.pop("genai", None)
