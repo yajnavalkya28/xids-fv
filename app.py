@@ -267,7 +267,7 @@ def groq_explain(key, models, prompt):
 # --------------------------------------------------------------------------
 # UI
 # --------------------------------------------------------------------------
-st.title("🛡️ Network Intrusion Detection using Explainable AI")
+st.title("🛡️ Network Intrusion Detection With Explainable AI")
 st.caption("Detect network attacks with deep learning / machine learning and see *why* the model decided.")
 
 with st.container(border=True):
