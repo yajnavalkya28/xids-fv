@@ -1,5 +1,5 @@
 """
-Network Intrusion Detection using Explainable AI (XIDS) - Streamlit demo
+Network Intrusion Detection With Explainable AI (XIDS) - Streamlit demo
 Flow: title/team -> choose model -> upload CSV -> Safe/Attack prediction
       -> SHAP explanation -> (optional) Groq GenAI plain-language explanation
 """
